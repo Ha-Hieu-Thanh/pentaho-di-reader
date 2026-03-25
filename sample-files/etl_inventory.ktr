@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<transformation>
+  <info>
+    <name>ETL Inventory</name>
+    <description>Inventory sync</description>
+  </info>
+  <step>
+    <name>Sync Products</name>
+    <type>TableInput</type>
+    <sql><![CDATA[
+      SELECT p.id, p.name, p.sku, p.price, p.stock_quantity, p.category_id
+      FROM products p
+      LEFT JOIN inventory_logs il ON p.id = il.product_id
+      WHERE p.updated_at > il.last_sync_date OR il.last_sync_date IS NULL
+    ]]></sql>
+  </step>
+  <step>
+    <name>Log Inventory Change</name>
+    <type>TableOutput</type>
+    <sql><![CDATA[
+      INSERT INTO inventory_logs (product_id, stock_before, stock_after, change_reason, logged_at)
+      SELECT id, old_stock, stock_quantity, 'sync', NOW()
+      FROM products
+      WHERE stock_quantity <> old_stock
+    ]]></sql>
+  </step>
+</transformation>

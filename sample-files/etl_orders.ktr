@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<transformation>
+  <info>
+    <name>ETL Orders</name>
+    <description>Extract orders data</description>
+  </info>
+  <step>
+    <name>Get Customers</name>
+    <type>TableInput</type>
+    <sql><![CDATA[SELECT id, name, email, created_at FROM customers WHERE active = 1]]></sql>
+  </step>
+  <step>
+    <name>Get Orders</name>
+    <type>TableInput</type>
+    <sql><![CDATA[
+      SELECT o.id, o.customer_id, o.order_date, o.total_amount, o.status
+      FROM orders o
+      JOIN customers c ON o.customer_id = c.id
+      WHERE o.order_date >= '2024-01-01'
+      ORDER BY o.order_date DESC
+    ]]></sql>
+  </step>
+  <step>
+    <name>Get Order Items</name>
+    <type>TableInput</type>
+    <sql><![CDATA[
+      SELECT oi.id, oi.order_id, oi.product_id, oi.quantity, oi.unit_price
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+    ]]></sql>
+  </step>
+  <step>
+    <name>Insert Summary</name>
+    <type>TableOutput</type>
+    <sql><![CDATA[
+      INSERT INTO order_summary (order_id, customer_name, total_amount)
+      SELECT o.id, c.name, o.total_amount
+      FROM orders o
+      JOIN customers c ON o.customer_id = c.id
+      WHERE o.status = 'completed'
+    ]]></sql>
+  </step>
+</transformation>
