@@ -9,7 +9,6 @@ import org.apache.poi.xssf.usermodel.XSSFCellStyle;
 import org.apache.poi.xssf.usermodel.XSSFColor;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
-import java.awt.Color;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -24,8 +23,14 @@ import java.util.List;
  */
 public class ExcelReportGenerator {
 
-    private static final Color HEADER_BG_COLOR = new Color(68, 114, 196); // Blue
-    private static final Color TOTAL_BG_COLOR  = new Color(217, 217, 217); // Light gray
+    private static final XSSFColor HEADER_BG_COLOR = makeColor((byte)68, (byte)114, (byte)196);
+    private static final XSSFColor TOTAL_BG_COLOR  = makeColor((byte)217, (byte)217, (byte)217);
+
+    private static XSSFColor makeColor(byte r, byte g, byte b) {
+        XSSFColor c = new XSSFColor();
+        c.setRGB(new byte[]{r, g, b});
+        return c;
+    }
 
     /**
      * Generates the Excel report and saves it to the specified output file.
@@ -121,7 +126,7 @@ public class ExcelReportGenerator {
 
     private CellStyle buildHeaderStyle(XSSFWorkbook workbook) {
         XSSFCellStyle style = workbook.createCellStyle();
-        style.setFillForegroundColor(new XSSFColor(HEADER_BG_COLOR, null));
+        style.setFillForegroundColor(HEADER_BG_COLOR);
         style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
         Font font = workbook.createFont();
@@ -140,7 +145,7 @@ public class ExcelReportGenerator {
 
     private CellStyle buildTotalStyle(XSSFWorkbook workbook) {
         XSSFCellStyle style = workbook.createCellStyle();
-        style.setFillForegroundColor(new XSSFColor(TOTAL_BG_COLOR, null));
+        style.setFillForegroundColor(TOTAL_BG_COLOR);
         style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
         Font font = workbook.createFont();

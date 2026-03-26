@@ -10,6 +10,7 @@ public class FileDetail {
     private final String fileName;
     private final String filePath;
     private final Set<String> tables = new TreeSet<>();
+    /** Stores entries as "table.column" (qualified) for Sheet 3 display */
     private final Set<String> columns = new TreeSet<>();
 
     public FileDetail(String fileName, String filePath) {
@@ -39,9 +40,17 @@ public class FileDetail {
         }
     }
 
-    public void addColumn(String column) {
-        if (column != null && !column.trim().isEmpty()) {
-            columns.add(column.trim());
+    /**
+     * Adds a column qualified by its table name (e.g. "subscriber.isdn").
+     * This drives Sheet 3 ("Columns") output.
+     */
+    public void addColumn(String table, String column) {
+        if (table != null && column != null) {
+            String t = table.trim();
+            String c = column.trim();
+            if (!t.isEmpty() && !c.isEmpty()) {
+                columns.add(t + "." + c);
+            }
         }
     }
 

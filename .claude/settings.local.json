@@ -1,4 +1,12 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(mvn clean:*)",
+      "Bash(mvn package:*)",
+      "Bash(mvn exec:java -Dexec.mainClass=com.app.Main -Dexec.args=\"sample-files\" -Dmaven.resolver.transport.wagon -q)"
+    ]
+  },
   "enabledPlugins": {
     "ai-ml-tools@claudekit-skills": false
   }

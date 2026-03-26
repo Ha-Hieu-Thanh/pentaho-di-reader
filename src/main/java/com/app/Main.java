@@ -75,7 +75,7 @@ public class Main {
             }
         }
 
-        File outputFile = new File(outputDir, "sql_usage_report.xlsx");
+        File outputFile = new File(outputDir, "sql_usage_report2.xlsx");
 
         try {
             reportGenerator.generate(result, outputFile);

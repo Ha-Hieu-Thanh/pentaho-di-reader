@@ -121,12 +121,12 @@ public class ExcelReportGeneratorTest {
         fd.addTable("orders");
         fd.addTable("customers");
         fd.addTable("products");
-        fd.addColumn("id");
-        fd.addColumn("name");
-        fd.addColumn("order_date");
+        fd.addColumn("orders", "id");
+        fd.addColumn("customers", "name");
+        fd.addColumn("orders", "order_date");
 
         assertEquals("customers, orders, products", fd.getTablesAsString());
-        assertEquals("id, name, order_date", fd.getColumnsAsString());
+        assertEquals("customers.name, orders.id, orders.order_date", fd.getColumnsAsString());
     }
 
     private ExtractionResult buildSampleResult() {
