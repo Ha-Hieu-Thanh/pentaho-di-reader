@@ -764,10 +764,11 @@ public class SqlExtractor {
             if (tableRef != null && !tableRef.isEmpty()) {
                 String resolved = resolve(tableRef);
                 if ("__subquery__".equals(resolved)) {
-                    Set<String> subCols = subqueryColMap.get(tableRef.toLowerCase());
-                    if (subCols != null && subCols.contains(colName.toLowerCase())) {
-                        result.recordColumn(tableRef, colName, fileDetail);
-                    }
+                    // A column referencing a subquery alias (e.g. "b.col_name") is a subquery
+                    // OUTPUT column — not a real table column. Do NOT record it here; the inner
+                    // SELECT's own FROM/JOIN processing already extracts the real source columns
+                    // (e.g. sd.att_detail_code) via the recursive anonymous-subquery path.
+                    return;
                 } else {
                     // Fix 2: fall back to currentTable (real table), not tableRef (alias string)
                     result.recordColumn(
