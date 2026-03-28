@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<transformation>
+  <info>
+    <name>ETL Subscriber Promotion Change</name>
+    <description>Extract subscriber promotion change data</description>
+  </info>
+  <step>
+    <name>Get Promotion Changes</name>
+    <type>TableInput</type>
+    <sql><![CDATA[select
+product_code,
+action_code,
+ngay_chuyen_doi,
+shop_code,
+status,
+act_status,
+user_chuyen_doi,
+sub_id,
+isdn,
+reg_type_id,
+reason_code,
+action_audit_id,
+ly_do_doi_khuyenmai,
+ma_km_truoc_doi,
+ma_km_sau_doi,
+ma_km_hientai,
+ma_goi_cuoc_hientai,
+ma_cdt,
+sotien_cdt,
+pay_type
+from(
+select
+sub.product_code product_code,
+aa.action_code,
+aa.issue_datetime ngay_chuyen_doi,
+aa.shop_code,
+sub.status,
+sub.act_status,
+sub.create_user user_chuyen_doi,
+sub.sub_id,
+sub.isdn,
+sub.reg_type_id,
+d.code reason_code,
+aa.action_audit_id,
+aa.reason_id ly_do_doi_khuyenmai,
+ad.old_value ma_km_truoc_doi,
+ad.new_value ma_km_sau_doi,
+sub.promotion_code ma_km_hientai,
+sub.product_code ma_goi_cuoc_hientai,
+spp.prepaid_code ma_cdt,
+spp.prepaid_amount sotien_cdt,
+sub.pay_type,
+row_number() over (partition by sub.sub_id,aa.issue_datetime order by aa.issue_datetime DESC) rank
+from f_action_audit aa
+inner join subscriber sub on sub.sub_id = aa.pk_id and sub.product_code IN ('POBAS','D90U') and sub.status = 2 and sub.telecom_service_id = '1'
+inner join f_sub_promotion_prepaid_pyc_1659 spp on spp.sub_id = sub.sub_id AND spp.status=1 AND FROM_UNIXTIME(UNIX_TIMESTAMP(spp.create_date),'yyyyMMddHHmmss')=aa.issue_datetime and spp.partition = '${YYYYMMDD:DD-1}'
+left join f_action_detail ad on ad.action_audit_id=aa.action_audit_id and ad.issue_datetime=aa.issue_datetime and ad.col_name='PROMOTION_CODE' and ad.table_name='SUBSCRIBER' and ad.partition >= '${YYYYMM01:MM-1}' and ad.partition < '${YYYYMM01}'
+left join d_reason d on d.reason_id = sub.reg_type_id and d.status = 1
+where aa.partition >= '${YYYYMM01:MM-1}'
+and aa.partition < '${YYYYMM01}'
+and aa.action_code in ('537')
+and substr(aa.issue_datetime,1,8) >= '${YYYYMM01:MM-1}'
+and substr(aa.issue_datetime,1,8) < '${YYYYMM01}'
+) where rank = 1]]></sql>
+  </step>
+  <step>
+    <name>Get Registration Data</name>
+    <type>TableInput</type>
+    <sql><![CDATA[select sub_id,
+isdn,
+product_code,
+act_Status,
+sta_datetime,
+issue_Datetime,
+shop_code_dktt,
+user_name_dktt,
+reason_id,
+reason_code,
+STAFF_CODE_DKTT_KIT,
+SHOP_CODE_DKTT_KIT,
+serial,
+status,
+action_audit_id
+from (
+select
+s.sub_id,
+s.isdn,
+s.product_code,
+s.act_Status,
+s.sta_datetime,
+a.issue_Datetime,
+a.shop_code as shop_code_dktt,
+a.user_name as user_name_dktt,
+a.reason_id,
+rs.code reason_code,
+b.STAFF_CODE_DKTT_KIT,
+c.SHOP_CODE_DKTT_KIT,
+s.serial,
+s.status,
+a.action_audit_id,
+row_number() over (partition by s.sub_id order by a.issue_Datetime DESC) rank
+from f_action_audit a
+inner join subscriber s
+on a.pk_id=s.sub_id
+left join (
+select
+sa.sub_id,
+sd.att_detail_value as STAFF_CODE_DKTT_KIT
+from f_bccs_sale_sub_att_detail sd, f_bccs_sale_sub_att sa
+where 1=1
+AND sa.sub_att_id = sd.sub_att_id
+AND sd.status = '1'
+AND sa.status = '1'
+AND sa.att_code IN ('STAFF_CODE_DKTT_KIT')
+AND sd.att_detail_code IN ('STAFF_CODE_DKTT_KIT')
+and sa.partition >= '${YYYYMM01:MM-2}'
+and sa.partition < '${YYYYMM01}'
+and sd.partition >= '${YYYYMM01:MM-2}'
+and sd.partition < '${YYYYMM01}'
+) b on s.sub_id = b.sub_id
+left join (
+select
+sa.sub_id,
+sd.att_detail_value as SHOP_CODE_DKTT_KIT
+from f_bccs_sale_sub_att_detail sd, f_bccs_sale_sub_att sa
+where 1=1
+AND sa.sub_att_id = sd.sub_att_id
+AND sd.status = '1'
+AND sa.status = '1'
+AND sa.att_code IN ('SHOP_CODE_DKTT_KIT')
+AND sd.att_detail_code IN ('SHOP_CODE_DKTT_KIT')
+and sa.partition >= '${YYYYMM01:MM-2}'
+and sa.partition < '${YYYYMM01}'
+and sd.partition >= '${YYYYMM01:MM-2}'
+and sd.partition < '${YYYYMM01}'
+) c on s.sub_id = c.sub_id
+left join d_reason rs
+on rs.reason_id=a.reason_id
+where 1=1
+and a.pk_type='3' and s.telecom_service_id=1
+and s.act_status!='030'
+and s.sta_Datetime is not null
+and a.action_code in ('04')
+and s.sta_Datetime >= '${YYYYMM01:MM-1}'
+and s.sta_Datetime < '${YYYYMM01}'
+and substr(a.issue_datetime,1,8) >= from_unixtime(UNIX_TIMESTAMP('${YYYYMM01:MM-1}', 'yyyyMMdd')-300, 'yyyyMMdd')
+and substr(a.issue_datetime,1,8) < '${YYYYMM01}'
+and a.partition >= from_unixtime(UNIX_TIMESTAMP('${YYYYMM01:MM-1}', 'yyyyMMdd')-300, 'yyyyMMdd')
+and a.partition < '${YYYYMM01}'
+and exists (
+select 1
+from f_bccs_sale_sub_att sa
+where sa.sub_id=s.sub_id
+and sa.att_code IN ('STAFF_CODE_DKTT_KIT', 'SHOP_CODE_DKTT_KIT')
+and sa.status=1
+and sa.partition >= '${YYYYMM01:MM-2}'
+and sa.partition < '${YYYYMM01}'
+)
+)
+where rank = 1]]></sql>
+  </step>
+</transformation>
