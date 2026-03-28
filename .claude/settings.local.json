@@ -4,7 +4,21 @@
       "Bash(python3:*)",
       "Bash(mvn clean:*)",
       "Bash(mvn package:*)",
-      "Bash(mvn exec:java -Dexec.mainClass=com.app.Main -Dexec.args=\"sample-files\" -Dmaven.resolver.transport.wagon -q)"
+      "Bash(mvn exec:java -Dexec.mainClass=com.app.Main -Dexec.args=\"sample-files\" -Dmaven.resolver.transport.wagon -q)",
+      "Bash(unzip -p ~/.m2/repository/net/sf/jsqlparser/jsqlparser/4.9/jsqlparser-4.9.jar net/sf/jsqlparser/expression/ExpressionVisitorAdapter.class)",
+      "Bash(xxd)",
+      "Bash(javap -classpath ~/.m2/repository/net/sf/jsqlparser/jsqlparser/4.9/jsqlparser-4.9.jar net.sf.jsqlparser.expression.ExpressionVisitorAdapter)",
+      "Bash(javap -classpath ~/.m2/repository/com/github/jsqlparser/jsqlparser/4.9/jsqlparser-4.9.jar com.github.jsqlparser.expression.ExpressionVisitorAdapter)",
+      "Bash(mvn test:*)",
+      "Bash(java -Djava.awt.headless=true -cp \"target/classes:target/lib/*\" com.app.Main \"sample-files\")",
+      "Bash(grep -v \"^$\")",
+      "Bash(jar tf:*)",
+      "Bash(grep \"\\\\.class$\")",
+      "Bash(grep -v \"$\")",
+      "Bash(for cls:*)",
+      "Bash(do echo:*)",
+      "Bash(javap -classpath ~/.m2/repository/com/github/jsqlparser/jsqlparser/4.9/jsqlparser-4.9.jar net.sf.jsqlparser.expression.BinaryExpression)",
+      "Bash(javap:*)"
     ]
   },
   "enabledPlugins": {

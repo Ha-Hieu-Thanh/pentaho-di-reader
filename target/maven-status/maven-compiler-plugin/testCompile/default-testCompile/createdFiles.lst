@@ -1,3 +1,4 @@
-com/app/parser/KettleParserTest.class
 com/app/report/ExcelReportGeneratorTest.class
+com/app/extractor/SqlExtractorDebugTest.class
 com/app/extractor/SqlExtractorTest.class
+com/app/parser/KettleParserTest.class

@@ -46,13 +46,6 @@ public class ExtractionResult {
         String c = columnName.trim();
         if (t.isEmpty() || c.isEmpty()) return;
 
-        // Debug: trace alias table names and "oi" column
-        if ("oi".equals(t) || "o".equals(t) || "p".equals(t) || "c".equals(t)
-                || "il".equals(t) || "oi".equals(c) || "p".equals(c) || "o".equals(c)) {
-            System.out.println("  [RECORD] " + t + "." + c + " in " + fileDetail.getFileName());
-            new Exception("stack").printStackTrace(System.out);
-        }
-
         Map<String, Integer> cols = columnCounts.get(t);
         if (cols == null) {
             cols = new TreeMap<>();

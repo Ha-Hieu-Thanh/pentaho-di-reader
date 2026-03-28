@@ -184,4 +184,60 @@ public class SqlExtractorTest {
         List<TableUsage> tables = result.getTableUsagesSortedByCount();
         assertFalse(tables.isEmpty());
     }
+
+    // ─── INSERT SELECT with aliases ───────────────────────────────────────────
+
+    @Test
+    public void testInsertSelectWithAliases_fullExample() {
+        FileDetail fd = new FileDetail("test.ktr", "/tmp/test.ktr");
+        extractor.extract(
+            "INSERT INTO daily_sales (product_id, sale_date, quantity_sold, revenue) " +
+            "SELECT p.id, CURDATE(), SUM(oi.quantity), SUM(oi.quantity * oi.unit_price) " +
+            "FROM order_items oi " +
+            "JOIN orders o ON oi.order_id = o.id " +
+            "JOIN products p ON oi.product_id = p.id " +
+            "WHERE DATE(o.order_date) = CURDATE() " +
+            "GROUP BY p.id",
+            fd, result);
+
+        List<TableUsage> tables = result.getTableUsagesSortedByCount();
+        // Should have: daily_sales, order_items, orders, products
+        assertEquals(4, tables.size());
+        assertTrue(tables.stream().anyMatch(t -> t.getTableName().equals("daily_sales")));
+        assertTrue(tables.stream().anyMatch(t -> t.getTableName().equals("order_items")));
+        assertTrue(tables.stream().anyMatch(t -> t.getTableName().equals("orders")));
+        assertTrue(tables.stream().anyMatch(t -> t.getTableName().equals("products")));
+
+        List<ColumnUsage> cols = result.getColumnUsagesSortedByTableAndCount();
+        System.out.println("=== INSERT SELECT columns ===");
+        for (ColumnUsage cu : cols) {
+            System.out.println("  " + cu.getTableName() + "." + cu.getColumnName());
+        }
+
+        // daily_sales columns (from INSERT column list)
+        assertTrue(cols.stream().anyMatch(c -> c.getTableName().equals("daily_sales") && c.getColumnName().equals("product_id")));
+        assertTrue(cols.stream().anyMatch(c -> c.getTableName().equals("daily_sales") && c.getColumnName().equals("sale_date")));
+        assertTrue(cols.stream().anyMatch(c -> c.getTableName().equals("daily_sales") && c.getColumnName().equals("quantity_sold")));
+        assertTrue(cols.stream().anyMatch(c -> c.getTableName().equals("daily_sales") && c.getColumnName().equals("revenue")));
+
+        // order_items columns (from SELECT list: oi.quantity, oi.unit_price, oi.order_id, oi.product_id)
+        assertTrue(cols.stream().anyMatch(c -> c.getTableName().equals("order_items") && c.getColumnName().equals("quantity")));
+        assertTrue(cols.stream().anyMatch(c -> c.getTableName().equals("order_items") && c.getColumnName().equals("unit_price")));
+        assertTrue(cols.stream().anyMatch(c -> c.getTableName().equals("order_items") && c.getColumnName().equals("order_id")));
+        assertTrue(cols.stream().anyMatch(c -> c.getTableName().equals("order_items") && c.getColumnName().equals("product_id")));
+
+        // orders columns (from WHERE: o.order_date)
+        assertTrue(cols.stream().anyMatch(c -> c.getTableName().equals("orders") && c.getColumnName().equals("order_date")));
+
+        // products columns (from SELECT list: p.id, and GROUP BY: p.id)
+        assertTrue(cols.stream().anyMatch(c -> c.getTableName().equals("products") && c.getColumnName().equals("id")));
+
+        // Make sure no alias-only names leak as table names
+        assertFalse("alias 'p' should NOT appear as table name",
+            cols.stream().anyMatch(c -> c.getTableName().equals("p")));
+        assertFalse("alias 'o' should NOT appear as table name",
+            cols.stream().anyMatch(c -> c.getTableName().equals("o")));
+        assertFalse("alias 'oi' should NOT appear as table name",
+            cols.stream().anyMatch(c -> c.getTableName().equals("oi")));
+    }
 }

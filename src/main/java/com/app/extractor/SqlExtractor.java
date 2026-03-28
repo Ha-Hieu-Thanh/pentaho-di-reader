@@ -18,6 +18,21 @@ import net.sf.jsqlparser.statement.update.UpdateSet;
 import net.sf.jsqlparser.statement.create.table.CreateTable;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
+import net.sf.jsqlparser.expression.operators.arithmetic.Addition;
+import net.sf.jsqlparser.expression.operators.arithmetic.BitwiseAnd;
+import net.sf.jsqlparser.expression.operators.arithmetic.BitwiseLeftShift;
+import net.sf.jsqlparser.expression.operators.arithmetic.BitwiseOr;
+import net.sf.jsqlparser.expression.operators.arithmetic.BitwiseRightShift;
+import net.sf.jsqlparser.expression.operators.arithmetic.BitwiseXor;
+import net.sf.jsqlparser.expression.operators.arithmetic.Concat;
+import net.sf.jsqlparser.expression.operators.arithmetic.Division;
+import net.sf.jsqlparser.expression.operators.arithmetic.IntegerDivision;
+import net.sf.jsqlparser.expression.operators.arithmetic.Modulo;
+import net.sf.jsqlparser.expression.operators.arithmetic.Multiplication;
+import net.sf.jsqlparser.expression.operators.arithmetic.Subtraction;
+import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
+import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
+import net.sf.jsqlparser.expression.operators.conditional.XorExpression;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -34,8 +49,9 @@ import java.util.regex.Pattern;
  *
  * Column extraction strategy:
  * - SELECT clause: use JSQLParser's SelectItem API directly to get Column nodes
- * - WHERE/ORDER BY/GROUP BY/HAVING: use JSQLParser's ExpressionVisitor to get Column nodes
- * - Only qualified (table.column) references are extracted — no regex
+ * - WHERE/ORDER BY/GROUP BY/HAVING: manual AST traversal to extract Column nodes
+ *   (ExpressionVisitorAdapter.visit(Column) is a no-op in JSQLParser 4.9)
+ * - Only qualified (table.column) references are extracted — no regex for alias-bearing cols
  *
  * Supports: SELECT, INSERT, UPSERT, UPDATE, DELETE, MERGE, CREATE TABLE.
  */
@@ -120,6 +136,13 @@ public class SqlExtractor {
             }
         }
 
+        // Fix 4: extract INSERT column list (e.g. INSERT INTO t (col1, col2) SELECT ...)
+        if (insert.getColumns() != null) {
+            for (Column col : insert.getColumns()) {
+                result.recordColumn(defaultTable, col.getColumnName(), fileDetail);
+            }
+        }
+
         if (insert.getSetUpdateSets() != null) {
             for (UpdateSet us : insert.getSetUpdateSets()) {
                 extractUpdateSetColumns(us, defaultTable, fileDetail, result);
@@ -133,8 +156,6 @@ public class SqlExtractor {
         }
 
         if (insert.getSelect() != null) {
-            // SELECT columns are processed via extractSelect — no regex on full string needed.
-            // The regex fallback below would incorrectly scan subquery bodies.
             extractSelect(insert.getSelect(), fileDetail, result, parentAliasMap);
         } else {
             // INSERT ... VALUES (no embedded SELECT) — regex on full statement is safe here.
@@ -159,7 +180,6 @@ public class SqlExtractor {
             extractSelect(upsert.getSelect(), fileDetail, result, parentAliasMap);
         }
         // No regex fallback on full upsert.toString() — subquery table refs would be misattributed.
-        // For bare VALUES columns (no SELECT), use the regex path on that specific clause instead.
     }
 
     // ─── UPDATE ─────────────────────────────────────────────────────────────
@@ -180,20 +200,9 @@ public class SqlExtractor {
             extractSelect(update.getSelect(), fileDetail, result, parentAliasMap);
         }
         // Process UPDATE WHERE clause directly with parent alias map.
-        // Do NOT use extractColumnsFromText on the full UPDATE string —
-        // that would regex-match subquery table refs (oi., o.) with no alias map.
         if (update.getWhere() != null) {
-            Expression where = update.getWhere();
             SelectColumnExtractor outer = new SelectColumnExtractor(fileDetail, result, parentAliasMap);
-            where.accept(new net.sf.jsqlparser.expression.ExpressionVisitorAdapter() {
-                @Override public void visit(Column col) {
-                    outer.processColumn(col);
-                }
-                @Override public void visit(net.sf.jsqlparser.expression.Function f) {
-                    // Traverse into function arguments (e.g. COALESCE(a, b) → visit a and b)
-                    super.visit(f);
-                }
-            });
+            outer.traverseExpr(update.getWhere());
         }
     }
 
@@ -210,7 +219,8 @@ public class SqlExtractor {
                 parentAliasMap.put(table.getAlias().getName(), tableName);
             }
         }
-        extractColumnsFromText(delete.toString(), table != null ? table.getName() : "", fileDetail, result);
+        extractColumnsFromText(delete.toString(), table != null ? table.getName() : "",
+                parentAliasMap, fileDetail, result);
     }
 
     // ─── MERGE ──────────────────────────────────────────────────────────────
@@ -234,7 +244,8 @@ public class SqlExtractor {
                 parentAliasMap.put(((Table) using).getAlias().getName(), usingName);
             }
         }
-        extractColumnsFromText(merge.toString(), table != null ? table.getName() : "", fileDetail, result);
+        extractColumnsFromText(merge.toString(), table != null ? table.getName() : "",
+                parentAliasMap, fileDetail, result);
     }
 
     // ─── CREATE TABLE ────────────────────────────────────────────────────────
@@ -250,6 +261,12 @@ public class SqlExtractor {
 
     private void extractUpdateSetColumns(UpdateSet us, String defaultTable,
                                         FileDetail fileDetail, ExtractionResult result) {
+        extractUpdateSetColumns(us, defaultTable, new HashMap<>(), fileDetail, result);
+    }
+
+    private void extractUpdateSetColumns(UpdateSet us, String defaultTable,
+                                        Map<String, String> aliasMap,
+                                        FileDetail fileDetail, ExtractionResult result) {
         ExpressionList<Column> columns = us.getColumns();
         ExpressionList<?> values = us.getValues();
 
@@ -261,7 +278,7 @@ public class SqlExtractor {
 
         if (values != null) {
             for (Object o : values) {
-                extractColumnsFromText(o.toString(), defaultTable, fileDetail, result);
+                extractColumnsFromText(o.toString(), defaultTable, aliasMap, fileDetail, result);
             }
         }
     }
@@ -269,6 +286,7 @@ public class SqlExtractor {
     /**
      * Uses regex on expression text to extract qualified "table.column" references,
      * resolving each table identifier through aliasMap before recording.
+     * Falls back to defaultTable when the table ref cannot be resolved.
      * This is a fallback path — the preferred route is extractColumnsFromExpression (AST-based).
      */
     private void extractColumnsFromText(String text, String defaultTable,
@@ -286,10 +304,10 @@ public class SqlExtractor {
         while (m.find()) {
             String tableRef = m.group(1);
             String colName  = m.group(2);
-            // Resolve alias to real table name; fall back to the raw identifier
+            // Resolve alias to real table name; fall back to defaultTable for safety
             String resolved = aliasMap.get(tableRef);
             result.recordColumn(
-                    resolved != null ? resolved : tableRef,
+                    resolved != null ? resolved : defaultTable,
                     colName,
                     fileDetail);
         }
@@ -364,7 +382,6 @@ public class SqlExtractor {
 
         /**
          * Register an alias → real-table entry into the CURRENT (innermost) scope.
-         * Does NOT affect outer scopes — no pollution.
          */
         private void putAlias(String alias, String realTable) {
             scopeStack.get(scopeStack.size() - 1).put(alias, realTable);
@@ -380,26 +397,6 @@ public class SqlExtractor {
                 if (found != null) return found;
             }
             return null;
-        }
-
-        /**
-         * Processes a single Column node, resolving its table qualifier against the scope stack.
-         * Exposed so it can be called from ExpressionVisitorAdapter in extractUpdate.
-         */
-        private void processColumn(Column col) {
-            String colName = col.getColumnName();
-            String tableRef = col.getTable() != null ? col.getTable().getName() : null;
-            if (tableRef != null && !tableRef.isEmpty()) {
-                String resolved = resolve(tableRef);
-                if ("__subquery__".equals(resolved)) {
-                    Set<String> subCols = subqueryColMap.get(tableRef.toLowerCase());
-                    if (subCols != null && subCols.contains(colName.toLowerCase())) {
-                        result.recordColumn(tableRef, colName, fileDetail);
-                    }
-                } else {
-                    result.recordColumn(resolved != null ? resolved : tableRef, colName, fileDetail);
-                }
-            }
         }
 
         // ── SelectVisitor entry points ──────────────────────────────────────
@@ -434,16 +431,12 @@ public class SqlExtractor {
         }
 
         @Override public void visit(LateralSubSelect lss) {
-            // ExpressionVisitorAdapter may skip this too; visit inner select directly.
             if (lss.getSelect() != null) {
                 lss.getSelect().accept(this);
             }
         }
 
         @Override public void visit(ParenthesedSelect ps) {
-            // IMPORTANT: ExpressionVisitorAdapter's visit(ParenthesedSelect) silently delegates to
-            // visit(Select) → selectVisitor (which is null for anonymous inner classes).
-            // So the subquery is COMPLETELY SKIPPED unless we manually visit the inner SELECT here.
             if (ps.getSelect() != null) {
                 ps.getSelect().accept(this);
             }
@@ -456,68 +449,58 @@ public class SqlExtractor {
         // ── Main processing ───────────────────────────────────────────────
 
         private void processSelectBody(PlainSelect ps) {
-            // Push a new scope so this SELECT's aliases don't overwrite the parent context.
-            // This is critical when a subquery (ParenthesedSelect in UPDATE SET) is visited
-            // via ExpressionVisitor.Function → super.visit → traverse → ParenthesedSelect.visit
-            // without going through SetOperationList (which already pushes its own scope).
             pushScope();
             try {
                 buildAliasMap(ps);
 
-            // 2. Extract columns from SELECT list using Column nodes directly.
-            //    The AST visitor handles qualified names (e.g. o.id → orders.id).
-            //    Unqualified names are skipped here to avoid misattribution
-            //    when multiple tables are joined (e.g. "status" wrongly recorded
-            //    as the first table's column instead of its actual table).
-            if (ps.getSelectItems() != null) {
-                for (SelectItem<?> item : ps.getSelectItems()) {
-                    extractColumnsFromSelectItem(item);
+                // 1. Extract columns from SELECT list using Column nodes directly.
+                if (ps.getSelectItems() != null) {
+                    for (SelectItem<?> item : ps.getSelectItems()) {
+                        extractColumnsFromSelectItem(item);
+                    }
                 }
-            }
 
-            // 3. Extract columns from WHERE (AST + standalone fallback)
-            if (ps.getWhere() != null) {
-                extractColumnsFromExpression(ps.getWhere());
-                // Standalone fallback: only when there are no JOINs (single-table queries
-                // like "SELECT id FROM customers WHERE active = 1").
-                if (!hasJoin(ps)) {
-                    extractStandaloneFromExpression(ps.getWhere());
+                // 2. Extract columns from WHERE (AST + standalone fallback)
+                if (ps.getWhere() != null) {
+                    traverseExpr(ps.getWhere());
+                    if (!hasJoin(ps)) {
+                        extractStandaloneFromExpression(ps.getWhere());
+                    }
                 }
-            }
 
-            // 4. Extract columns from GROUP BY
-            if (ps.getGroupBy() != null) {
-                ExpressionList groupByExprs = ps.getGroupBy().getGroupByExpressions();
-                if (groupByExprs != null) {
-                    for (Object o : groupByExprs) {
-                        Expression e = (Expression) o;
-                        extractColumnsFromExpression(e);
-                        if (!hasJoin(ps)) {
-                            extractStandaloneFromExpression(e);
+                // 3. Extract columns from GROUP BY
+                if (ps.getGroupBy() != null) {
+                    ExpressionList groupByExprs = ps.getGroupBy().getGroupByExpressions();
+                    if (groupByExprs != null) {
+                        for (Object o : groupByExprs) {
+                            Expression e = (Expression) o;
+                            traverseExpr(e);
+                            if (!hasJoin(ps)) {
+                                extractStandaloneFromExpression(e);
+                            }
                         }
                     }
                 }
-            }
 
-            // 5. Extract columns from HAVING
-            if (ps.getHaving() != null) {
-                extractColumnsFromExpression(ps.getHaving());
-                if (!hasJoin(ps)) {
-                    extractStandaloneFromExpression(ps.getHaving());
+                // 4. Extract columns from HAVING
+                if (ps.getHaving() != null) {
+                    traverseExpr(ps.getHaving());
+                    if (!hasJoin(ps)) {
+                        extractStandaloneFromExpression(ps.getHaving());
+                    }
                 }
-            }
 
-            // 6. Extract columns from ORDER BY
-            if (ps.getOrderByElements() != null) {
-                for (OrderByElement elem : ps.getOrderByElements()) {
-                    if (elem.getExpression() != null) {
-                        extractColumnsFromExpression(elem.getExpression());
-                        if (!hasJoin(ps)) {
-                            extractStandaloneFromExpression(elem.getExpression());
+                // 5. Extract columns from ORDER BY
+                if (ps.getOrderByElements() != null) {
+                    for (OrderByElement elem : ps.getOrderByElements()) {
+                        if (elem.getExpression() != null) {
+                            traverseExpr(elem.getExpression());
+                            if (!hasJoin(ps)) {
+                                extractStandaloneFromExpression(elem.getExpression());
+                            }
                         }
                     }
                 }
-            }
             } finally {
                 popScope();
             }
@@ -534,22 +517,25 @@ public class SqlExtractor {
 
             // FROM item (Table or SubSelect)
             FromItem fromItem = ps.getFromItem();
-            registerFromItem(fromItem, true);   // true = set as currentTable
+            registerFromItem(fromItem, true);
 
-            // JOIN items — add to alias map but don't change currentTable
+            // JOIN items
             if (ps.getJoins() != null) {
                 for (Join join : ps.getJoins()) {
                     FromItem right = join.getRightItem();
                     registerFromItem(right, false);
+                    // Fix 3: also traverse JOIN ON expressions to extract columns there
+                    if (join.getOnExpression() != null) {
+                        traverseExpr(join.getOnExpression());
+                    }
                 }
             }
 
-            // LATERAL VIEWS — register the table alias if present
+            // LATERAL VIEWS
             if (ps.getLateralViews() != null) {
                 for (LateralView lv : ps.getLateralViews()) {
                     if (lv.getTableAlias() != null) {
-                        String aliasName = lv.getTableAlias().getName();
-                        putAlias(aliasName, aliasName);
+                        putAlias(lv.getTableAlias().getName(), lv.getTableAlias().getName());
                     }
                 }
             }
@@ -558,8 +544,7 @@ public class SqlExtractor {
         /**
          * Registers a FROM item in the current scope's alias map.
          * - Table: realName → realName, alias → realName, currentTable = realName (if first)
-         * - ParenthesedSelect (subquery): subquery alias → "__subquery__" marker; also records its
-         *   column names so we can safely record subquery cols without polluting real table counts.
+         * - ParenthesedSelect (subquery): subquery alias → "__subquery__"; records its column names.
          */
         private void registerFromItem(FromItem fi, boolean setAsCurrent) {
             if (fi instanceof Table) {
@@ -575,11 +560,7 @@ public class SqlExtractor {
                 ParenthesedSelect ss = (ParenthesedSelect) fi;
                 String alias = ss.getAlias() != null ? ss.getAlias().getName() : null;
                 if (alias != null && !alias.isEmpty()) {
-                    // Mark subquery alias so column refs against it are recognised but not
-                    // attributed to a real table name.
                     putAlias(alias, "__subquery__");
-                    // Collect column names produced by the subquery so we can safely
-                    // record them when they appear in the outer query.
                     Set<String> subCols = new HashSet<>();
                     PlainSelect innerPs = ss.getSelect().getPlainSelect();
                     if (innerPs != null && innerPs.getSelectItems() != null) {
@@ -593,11 +574,6 @@ public class SqlExtractor {
             }
         }
 
-        /**
-         * Reads the output column name from a SelectItem:
-         * - Aliased expression → alias (via "expr AS alias" — detected via toString)
-         * - Strip "table." prefix if no alias found
-         */
         private String extractColName(SelectItem<?> si) {
             String s = si.toString();
             int asIdx = s.toUpperCase().lastIndexOf(" AS ");
@@ -609,14 +585,11 @@ public class SqlExtractor {
         // ── Extract columns from SelectItem (SELECT list) ──────────────────
 
         private void extractColumnsFromSelectItem(SelectItem<?> item) {
-            // Use SelectItemVisitor to visit Column nodes within each SELECT item expression.
-            // IMPORTANT: use the raw visit(SelectItem) method — the generic visit(SelectItem<?>)
-            // clashes with it at erasure. Per CLAUDE.md: use raw visit method only.
             SelectItemVisitor vis = new SelectItemVisitorAdapter() {
                 @Override
                 public void visit(SelectItem si) {
                     if (si.getExpression() == null) return;
-                    extractColumnsFromExpression(si.getExpression());
+                    traverseExpr(si.getExpression());
                 }
             };
             item.accept(vis);
@@ -625,82 +598,203 @@ public class SqlExtractor {
         // ── Extract columns from any Expression ────────────────────────────
 
         /**
-         * Visits Column nodes in an expression using JSQLParser's ExpressionVisitor.
-         * This is the correct approach — Column nodes have the table qualifier
-         * properly resolved by JSQLParser's parser.
-         *
-         * For subquery alias refs (e.g. "b.sub_id" where b is a subquery):
-         * - if the column IS in the subquery's column list → record as b.column (shown as-is in output)
-         * - if the column is NOT in the subquery's column list → it references an outer table;
-         *   the column is recorded under the real outer table (propagated up via the outer extractor)
+         * Extracts Column nodes from an Expression using a manual tree traversal.
+         * JSQLParser 4.9's ExpressionVisitorAdapter.visit(Column) is a no-op, so
+         * this method handles it directly with instanceof checks.
          */
-        private void extractColumnsFromExpression(Expression expr) {
+        private void traverseExpr(Expression expr) {
             if (expr == null) return;
-            try {
-                expr.accept(new net.sf.jsqlparser.expression.ExpressionVisitorAdapter() {
-                    @Override
-                    public void visit(Column col) {
-                        String colName = col.getColumnName();
-                        String tableRef = col.getTable() != null ? col.getTable().getName() : null;
-                        if (tableRef != null && !tableRef.isEmpty()) {
-                            String resolved = resolve(tableRef);
-                            if ("__subquery__".equals(resolved)) {
-                                // tableRef is the alias of a subquery in this scope.
-                                // Check if this column is one of the columns the subquery produces.
-                                Set<String> subCols = subqueryColMap.get(tableRef.toLowerCase());
-                                if (subCols != null && subCols.contains(colName.toLowerCase())) {
-                                    // Column is produced by this subquery — record as "alias.column"
-                                    result.recordColumn(tableRef, colName, fileDetail);
-                                }
-                                // else: column belongs to an outer table; skip here.
-                            } else {
-                                result.recordColumn(
-                                        resolved != null ? resolved : tableRef,
-                                        colName,
-                                        fileDetail);
-                            }
-                        }
-                    }
 
-                    @Override
-                    public void visit(net.sf.jsqlparser.expression.Function f) {
-                        // descend into args
-                        super.visit(f);
+            if (expr instanceof Column) {
+                handleColumn((Column) expr);
+                return;
+            }
+
+            // BinaryExpression covers: ComparisonOperator (EqualsTo, NotEqualsTo, etc.),
+            // arithmetic operators (Addition, Subtraction, etc.),
+            // and conditional operators (AndExpression, OrExpression, XorExpression).
+            if (expr instanceof net.sf.jsqlparser.expression.BinaryExpression) {
+                net.sf.jsqlparser.expression.BinaryExpression be =
+                        (net.sf.jsqlparser.expression.BinaryExpression) expr;
+                if (be.getLeftExpression() instanceof Expression)
+                    traverseExpr((Expression) be.getLeftExpression());
+                if (be.getRightExpression() instanceof Expression)
+                    traverseExpr((Expression) be.getRightExpression());
+                return;
+            }
+
+            if (expr instanceof net.sf.jsqlparser.expression.Function) {
+                net.sf.jsqlparser.expression.Function f =
+                        (net.sf.jsqlparser.expression.Function) expr;
+                if (f.getParameters() != null) {
+                    for (Object a : f.getParameters().getExpressions()) {
+                        if (a instanceof Expression) traverseExpr((Expression) a);
                     }
-                });
-            } catch (Exception e) {
-                // fallback to text
-                extractColumnsFromText(expr.toString(), currentTable, fileDetail, result);
+                }
+                return;
+            }
+
+            if (expr instanceof net.sf.jsqlparser.expression.Parenthesis) {
+                net.sf.jsqlparser.expression.Parenthesis p =
+                        (net.sf.jsqlparser.expression.Parenthesis) expr;
+                if (p.getExpression() instanceof Expression)
+                    traverseExpr((Expression) p.getExpression());
+                return;
+            }
+
+            if (expr instanceof net.sf.jsqlparser.expression.SignedExpression) {
+                net.sf.jsqlparser.expression.SignedExpression se =
+                        (net.sf.jsqlparser.expression.SignedExpression) expr;
+                if (se.getExpression() instanceof Expression)
+                    traverseExpr((Expression) se.getExpression());
+                return;
+            }
+
+            if (expr instanceof net.sf.jsqlparser.expression.NotExpression) {
+                net.sf.jsqlparser.expression.NotExpression ne =
+                        (net.sf.jsqlparser.expression.NotExpression) expr;
+                if (ne.getExpression() instanceof Expression)
+                    traverseExpr((Expression) ne.getExpression());
+                return;
+            }
+
+            if (expr instanceof net.sf.jsqlparser.expression.CaseExpression) {
+                net.sf.jsqlparser.expression.CaseExpression ce =
+                        (net.sf.jsqlparser.expression.CaseExpression) expr;
+                if (ce.getSwitchExpression() instanceof Expression)
+                    traverseExpr((Expression) ce.getSwitchExpression());
+                if (ce.getElseExpression() instanceof Expression)
+                    traverseExpr((Expression) ce.getElseExpression());
+                for (net.sf.jsqlparser.expression.WhenClause w : ce.getWhenClauses()) {
+                    if (w.getWhenExpression() instanceof Expression)
+                        traverseExpr((Expression) w.getWhenExpression());
+                    if (w.getThenExpression() instanceof Expression)
+                        traverseExpr((Expression) w.getThenExpression());
+                }
+                return;
+            }
+
+            if (expr instanceof net.sf.jsqlparser.expression.operators.relational.ExistsExpression) {
+                net.sf.jsqlparser.expression.operators.relational.ExistsExpression ee =
+                        (net.sf.jsqlparser.expression.operators.relational.ExistsExpression) expr;
+                if (ee.getRightExpression() instanceof Expression)
+                    traverseExpr((Expression) ee.getRightExpression());
+                return;
+            }
+
+            if (expr instanceof net.sf.jsqlparser.expression.operators.relational.IsNullExpression) {
+                net.sf.jsqlparser.expression.operators.relational.IsNullExpression ine =
+                        (net.sf.jsqlparser.expression.operators.relational.IsNullExpression) expr;
+                if (ine.getLeftExpression() instanceof Expression)
+                    traverseExpr((Expression) ine.getLeftExpression());
+                return;
+            }
+
+            if (expr instanceof net.sf.jsqlparser.expression.operators.relational.InExpression) {
+                net.sf.jsqlparser.expression.operators.relational.InExpression ie =
+                        (net.sf.jsqlparser.expression.operators.relational.InExpression) expr;
+                if (ie.getLeftExpression() instanceof Expression)
+                    traverseExpr((Expression) ie.getLeftExpression());
+                if (ie.getRightExpression() instanceof Expression)
+                    traverseExpr((Expression) ie.getRightExpression());
+                return;
+            }
+
+            if (expr instanceof net.sf.jsqlparser.expression.operators.relational.Between) {
+                net.sf.jsqlparser.expression.operators.relational.Between b =
+                        (net.sf.jsqlparser.expression.operators.relational.Between) expr;
+                if (b.getLeftExpression() instanceof Expression)
+                    traverseExpr((Expression) b.getLeftExpression());
+                if (b.getBetweenExpressionStart() instanceof Expression)
+                    traverseExpr((Expression) b.getBetweenExpressionStart());
+                if (b.getBetweenExpressionEnd() instanceof Expression)
+                    traverseExpr((Expression) b.getBetweenExpressionEnd());
+                return;
+            }
+
+            if (expr instanceof net.sf.jsqlparser.expression.operators.relational.LikeExpression) {
+                net.sf.jsqlparser.expression.operators.relational.LikeExpression le =
+                        (net.sf.jsqlparser.expression.operators.relational.LikeExpression) expr;
+                if (le.getLeftExpression() instanceof Expression)
+                    traverseExpr((Expression) le.getLeftExpression());
+                if (le.getRightExpression() instanceof Expression)
+                    traverseExpr((Expression) le.getRightExpression());
+                if (le.getEscape() instanceof Expression)
+                    traverseExpr((Expression) le.getEscape());
+                return;
+            }
+
+            if (expr instanceof net.sf.jsqlparser.expression.CastExpression) {
+                net.sf.jsqlparser.expression.CastExpression ce =
+                        (net.sf.jsqlparser.expression.CastExpression) expr;
+                if (ce.getLeftExpression() instanceof Expression)
+                    traverseExpr((Expression) ce.getLeftExpression());
+                return;
+            }
+
+            // All other expression types — skip silently (literals, subqueries, etc.)
+        }
+
+        private void handleColumn(Column col) {
+            String colName = col.getColumnName();
+            String tableRef = col.getTable() != null ? col.getTable().getName() : null;
+            if (tableRef != null && !tableRef.isEmpty()) {
+                String resolved = resolve(tableRef);
+                if ("__subquery__".equals(resolved)) {
+                    Set<String> subCols = subqueryColMap.get(tableRef.toLowerCase());
+                    if (subCols != null && subCols.contains(colName.toLowerCase())) {
+                        result.recordColumn(tableRef, colName, fileDetail);
+                    }
+                } else {
+                    // Fix 2: fall back to currentTable (real table), not tableRef (alias string)
+                    result.recordColumn(
+                            resolved != null ? resolved : currentTable,
+                            colName,
+                            fileDetail);
+                }
             }
         }
 
         /**
          * Extract standalone (unqualified) column names from expressions.
-         * Resolves via scope stack first (handles subquery alias refs like "b.sub_id"
-         * where "b" is mapped to "__subquery__" — records as "b.col"), then falls back
-         * to currentTable for unqualified names.
+         * Uses TWO PASSES to avoid the regex-dot-any-char pitfall:
+         * 1. Qualified pass — extract "table.col" tokens and resolve alias → real table.
+         * 2. Unqualified pass — scan remaining text for bare words, filtering alias names.
          */
         private void extractStandaloneFromExpression(Expression expr) {
             if (expr == null) return;
             String text = expr.toString();
-            // IMPORTANT: [a-zA-Z_][a-zA-Z0-9_]* uses . as ANY-CHAR meta-character,
-            // so ".product_id" is matched as a single word. Fix: use literal-dot escape "[^.\s]+"
-            // or just change the pattern to not use . in the character class.
-            // Use [^.\s] to match any char except dot (literal) or whitespace.
-            Matcher m = Pattern.compile("\\b([a-zA-Z_][a-zA-Z0-9_]*)\\b").matcher(text);
-            while (m.find()) {
-                String word = m.group(1);
-                if (word.contains(".")) continue;  // skip qualified refs (handled by resolve below)
+
+            // Pass 1: qualified refs — prevent "order_items.oi" from matching "oi" as standalone
+            Matcher qual = Pattern.compile(
+                    "(?:^|(?=[^\\w.]))([a-zA-Z_][a-zA-Z0-9_]*)\\.([a-zA-Z_][a-zA-Z0-9_]*)"
+            ).matcher(text);
+            while (qual.find()) {
+                String tableRef = qual.group(1);
+                String colName  = qual.group(2);
+                String resolved = resolve(tableRef);
+                result.recordColumn(
+                        resolved != null ? resolved : currentTable,
+                        colName,
+                        fileDetail);
+            }
+
+            // Pass 2: unqualified bare words, but only outside qualified tokens
+            String stripped = text.replaceAll(
+                    "(?:^|(?=[^\\w.]))([a-zA-Z_][a-zA-Z0-9_]*)\\.([a-zA-Z_][a-zA-Z0-9_]*)",
+                    ""
+            );
+            Matcher bare = Pattern.compile("\\b([a-zA-Z_][a-zA-Z0-9_]*)\\b").matcher(stripped);
+            while (bare.find()) {
+                String word = bare.group(1);
                 if (isSqlKeyword(word) || isNonColumnWord(word)) continue;
 
+                // Fix 1: skip words that are alias/table names — they are table refs, not columns
                 String resolved = resolve(word);
                 if (resolved != null) {
-                    // Known alias — record with resolved table name.
-                    result.recordColumn(resolved, word, fileDetail);
-                } else {
-                    // Unknown word — record as currentTable.column
-                    result.recordColumn(currentTable, word, fileDetail);
+                    continue;
                 }
+                result.recordColumn(currentTable, word, fileDetail);
             }
         }
     }
