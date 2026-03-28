@@ -438,7 +438,14 @@ public class SqlExtractor {
 
         @Override public void visit(ParenthesedSelect ps) {
             if (ps.getSelect() != null) {
-                ps.getSelect().accept(this);
+                // When the FROM clause is a subquery "(SELECT ...) AS x", we need to:
+                // 1. Process the inner SELECT to extract its columns/aliases (recursive, using
+                //    SAME extractor so outer scope aliases like "aa" are available).
+                // 2. NOT let the inner query overwrite currentTable, so outer-level bare columns
+                //    (which reference the subquery output) still use the correct default table.
+                String savedCurrentTable = currentTable;
+                ps.getSelect().accept(this);        // process inner select with full outer scope
+                currentTable = savedCurrentTable;    // restore so outer bare cols work correctly
             }
         }
 
@@ -544,7 +551,9 @@ public class SqlExtractor {
         /**
          * Registers a FROM item in the current scope's alias map.
          * - Table: realName → realName, alias → realName, currentTable = realName (if first)
-         * - ParenthesedSelect (subquery): subquery alias → "__subquery__"; records its column names.
+         * - ParenthesedSelect (subquery with alias): alias → "__subquery__"; records its column names.
+         * - ParenthesedSelect (anonymous, no alias): processes inner SELECT recursively so outer
+         *   scope aliases are available; preserves currentTable so outer-level bare columns still work.
          */
         private void registerFromItem(FromItem fi, boolean setAsCurrent) {
             if (fi instanceof Table) {
@@ -560,6 +569,7 @@ public class SqlExtractor {
                 ParenthesedSelect ss = (ParenthesedSelect) fi;
                 String alias = ss.getAlias() != null ? ss.getAlias().getName() : null;
                 if (alias != null && !alias.isEmpty()) {
+                    // Named subquery — register alias and record its output column names
                     putAlias(alias, "__subquery__");
                     Set<String> subCols = new HashSet<>();
                     PlainSelect innerPs = ss.getSelect().getPlainSelect();
@@ -570,6 +580,19 @@ public class SqlExtractor {
                         }
                     }
                     subqueryColMap.put(alias.toLowerCase(), subCols);
+                } else {
+                    // Anonymous subquery — no alias available. Outer bare columns (like
+                    // "action_code") cannot be attributed to a specific table. Instead,
+                    // process the inner SELECT recursively so that qualified refs inside it
+                    // (e.g. "aa.action_code") are resolved using the outer scope.  Save and
+                    // restore currentTable so the outer-level SELECT bare columns remain
+                    // attributed to whatever the outer FROM item set as currentTable.
+                    String savedCurrentTable = currentTable;
+                    if (setAsCurrent) currentTable = "";  // can't safely attribute outer bare cols
+                    if (ss.getSelect() != null) {
+                        ss.getSelect().accept(this);
+                    }
+                    currentTable = savedCurrentTable;
                 }
             }
         }
